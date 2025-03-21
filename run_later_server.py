@@ -15,36 +15,54 @@ from pathlib import Path
 
 
 class Task:
-    def __init__(self, command, target_time, task_id=None):
+    def __init__(self, command, target_time, task_id=None, completed=False, exit_code=None, completion_time=None):
         self.command = command
         self.target_time = target_time
         self.task_id = task_id or str(int(time.time() * 1000))
+        self.completed = completed
+        self.exit_code = exit_code
+        self.completion_time = completion_time
     
     def to_dict(self):
-        return {
+        data = {
             'command': self.command,
             'target_time': self.target_time.isoformat(),
-            'task_id': self.task_id
+            'task_id': self.task_id,
+            'completed': self.completed
         }
+        if self.exit_code is not None:
+            data['exit_code'] = self.exit_code
+        if self.completion_time:
+            data['completion_time'] = self.completion_time.isoformat()
+        return data
     
     @classmethod
     def from_dict(cls, data):
-        return cls(
+        task = cls(
             data['command'],
             datetime.datetime.fromisoformat(data['target_time']),
-            data['task_id']
+            data['task_id'],
+            data.get('completed', False)
         )
+        if 'exit_code' in data:
+            task.exit_code = data['exit_code']
+        if 'completion_time' in data:
+            task.completion_time = datetime.datetime.fromisoformat(data['completion_time'])
+        return task
 
 
 class TaskServer:
     def __init__(self, socket_path):
         self.socket_path = socket_path
-        self.tasks = {}
+        self.tasks = {}  # Active tasks
+        self.completed_tasks = {}  # Completed tasks
         self.lock = threading.Lock()
         self.running = True
         self.task_threads = {}
         self.tasks_file = self._get_tasks_file_path()
+        self.completed_tasks_file = self._get_completed_tasks_file_path()
         self._load_tasks()
+        self._load_completed_tasks()
     
     def _get_tasks_file_path(self):
         """Get the path to the persistent tasks file"""
@@ -56,6 +74,17 @@ class TaskServer:
         
         os.makedirs(base_dir, exist_ok=True)
         return os.path.join(base_dir, 'tasks.json')
+    
+    def _get_completed_tasks_file_path(self):
+        """Get the path to the completed tasks file"""
+        xdg_config_home = os.environ.get('XDG_CONFIG_HOME')
+        if xdg_config_home:
+            base_dir = os.path.join(xdg_config_home, 'run_later')
+        else:
+            base_dir = os.path.join(os.path.expanduser('~'), '.config', 'run_later')
+        
+        os.makedirs(base_dir, exist_ok=True)
+        return os.path.join(base_dir, 'completed_tasks.json')
     
     def _load_tasks(self):
         """Load tasks from persistent storage"""
@@ -76,6 +105,32 @@ class TaskServer:
         except Exception as e:
             print(f"Error loading tasks: {e}")
     
+    def _load_completed_tasks(self):
+        """Load completed tasks from persistent storage"""
+        if not os.path.exists(self.completed_tasks_file):
+            return
+        
+        try:
+            with open(self.completed_tasks_file, 'r') as f:
+                tasks_data = json.load(f)
+            
+            for task_data in tasks_data.values():
+                task = Task.from_dict(task_data)
+                self.completed_tasks[task.task_id] = task
+            
+            # Keep only the last 100 completed tasks
+            if len(self.completed_tasks) > 100:
+                sorted_tasks = sorted(
+                    self.completed_tasks.items(),
+                    key=lambda x: x[1].completion_time or datetime.datetime.min,
+                    reverse=True
+                )
+                self.completed_tasks = dict(sorted_tasks[:100])
+            
+            print(f"Loaded {len(self.completed_tasks)} completed tasks from {self.completed_tasks_file}")
+        except Exception as e:
+            print(f"Error loading completed tasks: {e}")
+    
     def _save_tasks(self):
         """Save tasks to persistent storage"""
         try:
@@ -88,6 +143,19 @@ class TaskServer:
                 json.dump(tasks_data, f, indent=2)
         except Exception as e:
             print(f"Error saving tasks: {e}")
+    
+    def _save_completed_tasks(self):
+        """Save completed tasks to persistent storage"""
+        try:
+            tasks_data = {
+                task_id: task.to_dict()
+                for task_id, task in self.completed_tasks.items()
+            }
+            
+            with open(self.completed_tasks_file, 'w') as f:
+                json.dump(tasks_data, f, indent=2)
+        except Exception as e:
+            print(f"Error saving completed tasks: {e}")
     
     def start(self):
         # Create socket directory if it doesn't exist
@@ -197,6 +265,32 @@ class TaskServer:
             
             print(f"Task {task_id} completed with exit code {result.returncode}")
             print(f"Logs written to {log_base}.stdout and {log_base}.stderr")
+            
+            # Mark task as completed and save to history
+            with self.lock:
+                # Create a copy of the task for completed_tasks
+                completion_time = datetime.datetime.now()
+                completed_task = Task(
+                    command=command,
+                    target_time=completion_time - datetime.timedelta(seconds=1),  # Approximate target time
+                    task_id=task_id,
+                    completed=True,
+                    exit_code=result.returncode,
+                    completion_time=completion_time
+                )
+                self.completed_tasks[task_id] = completed_task
+                
+                # Limit the number of completed tasks we keep
+                if len(self.completed_tasks) > 100:
+                    # Sort by completion time and keep only the most recent 100
+                    sorted_tasks = sorted(
+                        self.completed_tasks.items(),
+                        key=lambda x: x[1].completion_time or datetime.datetime.min,
+                        reverse=True
+                    )
+                    self.completed_tasks = dict(sorted_tasks[:100])
+                
+                self._save_completed_tasks()
         
         except Exception as e:
             print(f"Error executing task {task_id}: {e}")
@@ -240,6 +334,8 @@ class TaskServer:
             return self.handle_list()
         elif action == 'cancel':
             return self.handle_cancel(message)
+        elif action == 'history':
+            return self.handle_history(message)
         else:
             return {'status': 'error', 'message': f'Unknown action: {action}'}
     
@@ -275,6 +371,31 @@ class TaskServer:
             tasks_data = {
                 task_id: task.to_dict()
                 for task_id, task in self.tasks.items()
+            }
+        
+        return {
+            'status': 'success',
+            'tasks': tasks_data
+        }
+    
+    def handle_history(self, message):
+        """Handle a request to list completed tasks"""
+        limit = message.get('limit', 10)  # Default to last 10 tasks
+        
+        with self.lock:
+            # Sort tasks by completion time, most recent first
+            sorted_tasks = sorted(
+                self.completed_tasks.items(),
+                key=lambda x: x[1].completion_time or datetime.datetime.min,
+                reverse=True
+            )
+            
+            # Limit the number of tasks returned
+            limited_tasks = sorted_tasks[:limit]
+            
+            tasks_data = {
+                task_id: task.to_dict()
+                for task_id, task in limited_tasks
             }
         
         return {
