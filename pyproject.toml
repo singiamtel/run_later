@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "run_later"
+version = "0.1.0"
+description = "A utility to schedule commands to run at a later time"
+readme = "README.md"
+requires-python = ">=3.6"
+license = {text = "MIT"}
+authors = [
+    {name = "Sergio Garcia", email = "sergio@garciadelacruz.es"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX",
+]
+
+[project.scripts]
+run_later = "src.run_later_client:main"
+run_later_server = "src.run_later_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.hatch.build]
+packages = ["src"] 
