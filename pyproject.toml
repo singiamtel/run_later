@@ -26,4 +26,11 @@ run_later_server = "src.run_later_server:main"
 packages = ["src"]
 
 [tool.hatch.build]
-packages = ["src"] 
+packages = ["src"]
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-cov"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py" 

@@ -1,5 +1,7 @@
 # Run Later
 
+[![Run Tests](https://github.com/sergiodxa/run_later/actions/workflows/tests.yml/badge.svg)](https://github.com/sergiodxa/run_later/actions/workflows/tests.yml)
+
 A Unix task scheduler written in Python that allows running commands after a specified delay using a client/server architecture.
 
 ## Features
@@ -151,4 +153,3 @@ The system uses a client/server architecture:
     - Support for singular/plural (e.g. 1 day vs 2 days)
 - Support for recurring tasks
 - What happens when the server was down when a task was supposed to run?
-- Add tests
